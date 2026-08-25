@@ -70,6 +70,9 @@ public class SambaForegroundService extends Service {
 
                 Log.i(TAG, "Samba service started successfully on " + ip + ":" + SMB_PORT);
 
+                // 打印完整使用说明到 logcat，方便不熟悉用法的开发者
+                printUsageInfo(ip);
+
             } catch (Exception e) {
                 Log.e(TAG, "Failed to start Samba service", e);
                 updateNotificationError(e.getMessage());
@@ -150,6 +153,32 @@ public class SambaForegroundService extends Service {
 
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.notify(NOTIFICATION_ID, notification);
+    }
+
+    /** 打印完整的使用说明到 logcat，供不熟悉用法的开发者快速上手。 */
+    private void printUsageInfo(String ip) {
+        String addr = (ip != null && !ip.isEmpty()) ? ip : "<本机局域网IP>";
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n===========================================================\n");
+        sb.append(" Samba 服务已启动\n");
+        sb.append("-----------------------------------------------------------\n");
+        sb.append(" 服务地址 : smb://").append(addr).append(":").append(SMB_PORT).append("\n");
+        sb.append(" 账号     : 免密（用户名任意，密码留空）\n");
+        sb.append(" 共享目录 :\n");
+        sb.append(SambaSetup.getShareSummary(this));
+        sb.append("-----------------------------------------------------------\n");
+        sb.append(" 连接方法 :\n");
+        sb.append("   macOS : Finder → ⌘K → smb://").append(addr).append(":").append(SMB_PORT).append("/data\n");
+        sb.append("   Linux : smbclient //").append(addr).append("/data -p ").append(SMB_PORT).append("\n");
+        sb.append("   Windows: 系统 SMB 客户端固定用 445 端口，需在本机转发:\n");
+        sb.append("     netsh interface portproxy add v4tov4 listenport=445 ")
+          .append("listenaddress=0.0.0.0 connectport=").append(SMB_PORT)
+          .append(" connectaddress=").append(addr).append("\n");
+        sb.append("     （执行后访问 \\\\").append(addr).append("\\data 或 \\\\127.0.0.1\\data）\n");
+        sb.append("-----------------------------------------------------------\n");
+        sb.append(" 日志/运行文件 : cache/samba/var/（直接删除该目录即可清理）\n");
+        sb.append("===========================================================\n");
+        Log.i(TAG, sb.toString());
     }
 
     // ==================== 工具方法 ====================
