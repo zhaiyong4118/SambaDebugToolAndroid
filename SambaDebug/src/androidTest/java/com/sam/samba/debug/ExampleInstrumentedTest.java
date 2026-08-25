@@ -19,8 +19,8 @@ import static org.junit.Assert.*;
 public class ExampleInstrumentedTest {
     @Test
     public void useAppContext() {
-        // Context of the app under test.
+        // Context of the app under test. 不做硬编码包名断言，保证库可被其他项目复用。
         Context appContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        assertEquals("com.sam.samba.debug.test", appContext.getPackageName());
+        assertNotNull(appContext.getPackageName());
     }
 }

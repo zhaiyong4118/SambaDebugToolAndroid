@@ -32,13 +32,12 @@ public class SambaSetup {
         setExecutableRecursive(new File(sambaRoot, "lib"));
         setExecutableRecursive(new File(sambaRoot, "shim"));
 
-        // 3. 创建运行目录
+        // 3. 创建运行目录（etc=配置，var=运行时日志/锁文件，方便统一清理）
         new File(sambaRoot, "etc").mkdirs();
-        new File(sambaRoot, "private").mkdirs();
         new File(sambaRoot, "var").mkdirs();
 
         // 4. 生成 smb.conf
-        generateSmbConf(context, sambaRoot, new File(context.getDataDir().getAbsolutePath()), localIp);
+        generateSmbConf(context, sambaRoot, localIp);
 
         // 5. 生成 smbpasswd
         generateSmbPasswd(sambaRoot);
@@ -162,14 +161,11 @@ public class SambaSetup {
 
     // ==================== 配置生成 ====================
 
-    private static void generateSmbConf(Context context, File sambaRoot, File shareDir, String localIp) throws Exception {
+    private static void generateSmbConf(Context context, File sambaRoot, String localIp) throws Exception {
         // 1. 准备路径
-        // 注意：这里使用 shareDir 作为共享目录，确保路径正确
-        String sharePath = shareDir.getAbsolutePath();
         String sambaEtc = new File(sambaRoot, "etc").getAbsolutePath();
-        String sambaLib = new File(sambaRoot, "lib").getAbsolutePath();
-        // 指定一个可写的目录作为锁文件和pid文件的存放地，避免权限问题
-        String lockDir = context.getCacheDir().getAbsolutePath();
+        // 运行时目录：日志/锁文件/pid 等全部统一到 cache/samba/var，便于清理
+        String runDir = new File(sambaRoot, "var").getAbsolutePath();
 
         // 2. 构建配置字符串
         // 我们直接硬编码配置，不再依赖模板文件
@@ -215,35 +211,48 @@ public class SambaSetup {
         conf.append("   # 性能与日志\n");
         conf.append("   socket options = TCP_NODELAY\n");
         conf.append("   dns proxy = no\n");
-        conf.append("   pid directory = ").append(lockDir).append("\n");
-        conf.append("   lock directory = ").append(lockDir).append("\n");
-        conf.append("   state directory = ").append(lockDir).append("\n");
-        // 👇 把二进制编译期默认路径(/data/samba/private 等)全部指到 app 缓存，否则 smbd 无权限创建
-        conf.append("   private dir = ").append(lockDir).append("\n");
+        conf.append("   pid directory = ").append(runDir).append("\n");
+        conf.append("   lock directory = ").append(runDir).append("\n");
+        conf.append("   state directory = ").append(runDir).append("\n");
+        // 👇 把二进制编译期默认路径(/data/samba/private 等)全部指到 cache/samba/var，否则 smbd 无权限创建
+        conf.append("   private dir = ").append(runDir).append("\n");
         // 这个构建不认识 core directory，去掉以免报未知参数（corepath 失败是告警，不影响运行）
-        conf.append("   ncalrpc dir = ").append(lockDir).append("\n");
-        conf.append("   cache directory = ").append(lockDir).append("\n");
-        conf.append("   # 👇 修改 4: 指定日志文件，方便我们调试\n");
-        conf.append("   log file = ").append(lockDir).append("/smbd.log\n");
+        conf.append("   ncalrpc dir = ").append(runDir).append("\n");
+        conf.append("   cache directory = ").append(runDir).append("\n");
+        conf.append("   # 指定日志文件（统一在 var 下）\n");
+        conf.append("   log file = ").append(runDir).append("/smbd.log\n");
         conf.append("   log level = 4\n"); // 增加日志详细程度（排障用，可调低）
 
-        // 3. 定义共享目录
-        conf.append("[Public]\n");
-        conf.append("   comment = Public Share\n");
-        conf.append("   path = ").append(sharePath).append("\n");
-        conf.append("   browseable = yes\n");
-        conf.append("   writable = yes\n");
-        // 关键：允许访客访问此共享
-        conf.append("   guest ok = yes\n");
-        // 关键：赋予最大权限，避免 Android 写入失败
-        conf.append("   create mask = 0777\n");
-        conf.append("   directory mask = 0777\n");
-        // 不能用 force user = nobody：共享目录是 app 私有目录(0700)，
-        // 只有 app uid(debug) 能访问，nobody 会被拒 → Access denied
+        // 3. 定义共享目录（用小写名，方便客户端输入）
+        // 共享1：app 私有目录（data 目录本身）
+        appendShare(conf, "data", "App private data", context.getDataDir().getAbsolutePath());
+
+        // 共享2：外部存储 Android/data/<pkg>（Android 11+ 应用可访问自己的 Android/data 目录）
+        File extFiles = context.getExternalFilesDir(null);
+        if (extFiles != null) {
+            File extPkgDir = extFiles.getParentFile(); // .../Android/data/<pkg>
+            if (extPkgDir != null) {
+                appendShare(conf, "appdata", "External Android/data app dir", extPkgDir.getAbsolutePath());
+            }
+        }
 
         // 写入文件
         writeFile(new File(sambaRoot, "etc/smb.conf"), conf.toString());
         Log.i(TAG, "smb.conf generated at: " + sambaRoot);
+    }
+
+    /** 追加一个共享段。统一 guest ok + 最大权限，避免重复。 */
+    private static void appendShare(StringBuilder conf, String name, String comment, String path) {
+        conf.append("[").append(name).append("]\n");
+        conf.append("   comment = ").append(comment).append("\n");
+        conf.append("   path = ").append(path).append("\n");
+        conf.append("   browseable = yes\n");
+        conf.append("   writable = yes\n");
+        conf.append("   guest ok = yes\n");
+        conf.append("   create mask = 0777\n");
+        conf.append("   directory mask = 0777\n");
+        // 不能用 force user = nobody：共享目录通常是 app uid 私有(0700)，
+        // 只有 app uid(debug) 能访问，nobody 会被拒 → Access denied
     }
 
     private static void generateSmbPasswd(File sambaRoot) throws Exception {
@@ -264,8 +273,11 @@ public class SambaSetup {
 
     /**
      * username map：把客户端可能发送的各种用户名（macOS 登录名、GUEST、常见名）
-     * 都映射到 debug。这样 macOS 无论发什么用户名 + 空密码，都能认证成 debug，
-     * 走的是真实用户会话（签名正常），绕开 macOS 不接受 guest 会话的问题。
+     * 都映射到 debug（空密码）。这样 macOS 无论发什么用户名 + 空密码，都能认证成 debug，
+     * 走真实用户会话（签名正常），绕开 macOS 不接受 guest 会话的问题。
+     *
+     * ⚠️ 集成到其他项目时：把你们客户端的登录用户名加进下面的列表（格式：debug = 用户名1 用户名2 ...）。
+     * 这里预置了 zhaiyongdev（本调试项目 Mac 的登录名）等常见名字。
      */
     private static void generateUsernameMap(File sambaRoot) throws Exception {
         // 格式：unix用户名 = 客户端用户名列表（以空格分隔，大小写不敏感）

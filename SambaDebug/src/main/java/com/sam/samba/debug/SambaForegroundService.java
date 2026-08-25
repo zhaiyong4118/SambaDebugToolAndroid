@@ -120,14 +120,12 @@ public class SambaForegroundService extends Service {
         if (ip != null) {
             connectInfo = String.format(
                     "✅ Running | smb://%s:%d\n"
-                            + "User: debug / debug123\n"
-                            + "macOS: ⌘K → smb://%s:%d/Private\n"
-                            + "Win: netsh interface portproxy add v4tov4 "
-                            + "listenport=445 listenaddress=0.0.0.0 "
-                            + "connectport=%d connectaddress=%s",
-                    ip, SMB_PORT, ip, SMB_PORT, SMB_PORT, ip);
+                            + "免密 | 用户名任意，密码留空\n"
+                            + "共享: /data /appdata\n"
+                            + "macOS: ⌘K → smb://%s:%d/data",
+                    ip, SMB_PORT, ip, SMB_PORT);
         } else {
-            connectInfo = "✅ Running | Port: " + SMB_PORT + "\nUser: debug / debug123";
+            connectInfo = "✅ Running | Port: " + SMB_PORT + "\n免密 | 用户名任意，密码留空";
         }
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
