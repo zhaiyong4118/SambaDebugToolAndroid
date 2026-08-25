@@ -30,6 +30,7 @@
 #include <sys/syscall.h>
 #include <stdarg.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* 真实 libc 函数，在构造器里通过 dlsym 拿到，避免被自己的同名函数递归拦截 */
 typedef uid_t (*uid_fn)(void);
@@ -50,8 +51,8 @@ struct FakePwd {
 };
 
 static struct FakePwd s_root   = {"root",   0,     0,     "/data", "/system/bin/sh"};
-static struct FakePwd s_nobody = {"nobody", 65534, 65534, "/data", "/system/bin/sh"};
-static struct FakePwd s_debug;   /* 构造时填充为当前 app uid */
+static struct FakePwd s_nobody;   /* 构造时填充为 app uid：guest(nobody) 才能访问 app 私有共享目录 */
+static struct FakePwd s_debug;    /* 构造时填充为当前 app uid */
 
 /* 真实 uid/gid（构造器里从真实 libc 拿，供 getuid/geteuid 等返回） */
 static uid_t g_uid = 0;
@@ -64,11 +65,27 @@ static void shim_init(void) {
     real_syscall = (syscall_fn)dlsym(RTLD_NEXT, "syscall");
     g_uid = real_getuid ? real_getuid() : 0;
     g_gid = real_getgid ? real_getgid() : 0;
+    s_nobody.name  = "nobody";
+    s_nobody.uid   = g_uid;   /* guest 也落到 app uid，能访问 0700 的 app 目录 */
+    s_nobody.gid   = g_gid;
+    s_nobody.dir   = "/data/data";
+    s_nobody.shell = "/system/bin/sh";
     s_debug.name  = "debug";
     s_debug.uid   = g_uid;
     s_debug.gid   = g_gid;
     s_debug.dir   = "/data/data";
     s_debug.shell = "/system/bin/sh";
+
+    /* smbd 会给账号自动加 [homes] 共享，路径取自 home 目录；
+     * 若 home 是无效路径(/system/bin/sh)，macOS 枚举共享列表会失败。
+     * 因此用 app 传入的 SAMBASHIM_HOME(app 数据目录)覆盖 home 和 shell。 */
+    const char *home = getenv("SAMBASHIM_HOME");
+    if (home && home[0]) {
+        s_debug.dir   = home;
+        s_debug.shell = home;
+        s_nobody.dir  = home;
+        s_nobody.shell = home;
+    }
 }
 
 static const struct FakePwd *find_pwd_by_name(const char *name) {
@@ -81,8 +98,8 @@ static const struct FakePwd *find_pwd_by_name(const char *name) {
 
 static const struct FakePwd *find_pwd_by_uid(uid_t uid) {
     if (uid == 0) return &s_root;
+    if (uid == g_uid) return &s_debug;
     if (uid == 65534) return &s_nobody;
-    if (uid == s_debug.uid) return &s_debug;
     return NULL;
 }
 

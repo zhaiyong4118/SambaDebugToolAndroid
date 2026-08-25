@@ -51,7 +51,7 @@ public class SambaForegroundService extends Service {
                 String ip = getLocalIpAddress();
 
                 // 拷贝文件 & 生成配置
-                File sambaRoot = SambaSetup.setup(this);
+                File sambaRoot = SambaSetup.setup(this, ip);
 
                 // 启动 smbd
                 smbdProcess = SambaSetup.startDaemon(sambaRoot, "smbd");

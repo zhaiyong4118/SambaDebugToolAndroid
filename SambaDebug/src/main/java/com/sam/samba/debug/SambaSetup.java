@@ -19,7 +19,7 @@ public class SambaSetup {
     private static final String SAMBA_DIR = "samba";
     private static final int SMB_PORT = 1445;
 
-    public static File setup(Context context) throws Exception {
+    public static File setup(Context context, String localIp) throws Exception {
 //        File sambaRoot = new File(context.getFilesDir(), SAMBA_DIR);
         File sambaRoot = new File(context.getCacheDir(), SAMBA_DIR);
 
@@ -38,10 +38,13 @@ public class SambaSetup {
         new File(sambaRoot, "var").mkdirs();
 
         // 4. 生成 smb.conf
-        generateSmbConf(context, sambaRoot, new File(context.getDataDir().getAbsolutePath()));
+        generateSmbConf(context, sambaRoot, new File(context.getDataDir().getAbsolutePath()), localIp);
 
         // 5. 生成 smbpasswd
         generateSmbPasswd(sambaRoot);
+
+        // 6. 生成 username map（把客户端可能发的用户名映射到 debug，实现免密）
+        generateUsernameMap(sambaRoot);
 
         return sambaRoot;
     }
@@ -75,6 +78,13 @@ public class SambaSetup {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.environment().put("LD_LIBRARY_PATH", libPath);
         pb.environment().put("TMPDIR", sambaRoot.getAbsolutePath()); // Android 上没有可写的 /tmp
+
+        // 把 app 数据目录传给 shim 作为账号的 home 目录：
+        // smbd 会自动给用户加 [homes] 共享，路径取自账号 home；
+        // 若 home 无效(如 /system/bin/sh)，macOS 枚举共享列表时会失败。
+        // sambaRoot = <dataDir>/cache/samba，所以 getParentFile().getParentFile() = <dataDir>
+        pb.environment().put("SAMBASHIM_HOME",
+                sambaRoot.getParentFile().getParentFile().getAbsolutePath());
 
         // 无 root 垫片：拦截 setuid 系 syscall（seccomp 会 SIGSYS 杀 smbd）
         // 并伪造 getpwnam/getpwuid（Android /etc/passwd 为空）
@@ -152,7 +162,7 @@ public class SambaSetup {
 
     // ==================== 配置生成 ====================
 
-    private static void generateSmbConf(Context context, File sambaRoot, File shareDir) throws Exception {
+    private static void generateSmbConf(Context context, File sambaRoot, File shareDir, String localIp) throws Exception {
         // 1. 准备路径
         // 注意：这里使用 shareDir 作为共享目录，确保路径正确
         String sharePath = shareDir.getAbsolutePath();
@@ -178,17 +188,26 @@ public class SambaSetup {
         conf.append("   server max protocol = SMB3\n");
         conf.append("   \n");
         conf.append("   # 网络接口：Android 上 getifaddrs 自动探测会失败，必须显式指定\n");
-        conf.append("   # 0.0.0.0/0 表示所有 IPv4；配合 bind interfaces only = no（默认）监听所有接口\n");
-        conf.append("   interfaces = 0.0.0.0/0\n");
+        conf.append("   # 用实际 WiFi IPv4 作为接口地址（0.0.0.0/0 会让 smbd 无法确定接口，macOS 可能因此拒连）\n");
+        conf.append("   # 子网按 /24 处理（家庭局域网常见），不同子网可自行调整\n");
+        String iface = (localIp != null && !localIp.isEmpty()) ? localIp + "/24" : "0.0.0.0/0";
+        conf.append("   interfaces = ").append(iface).append("\n");
         conf.append("   bind interfaces only = no\n");
         conf.append("   \n");
         conf.append("   # 安全与用户配置\n");
         conf.append("   security = user\n");
         conf.append("   passdb backend = smbpasswd:").append(sambaEtc).append("/smbpasswd\n");
+        // 免密核心：把客户端各种用户名(含 macOS 登录名/GUEST)映射到 debug(空密码)
+        conf.append("   username map = ").append(sambaEtc).append("/username.map\n");
+        // 免密访问：匿名/未知用户都映射到 guest，guest(nobody) 由 shim 映射到 app uid
         conf.append("   map to guest = Bad User\n");
         conf.append("   guest account = nobody\n");
+        // guest 认证方法放在最前，保证匿名会话能直接成为 guest，不需要密码
+        conf.append("   auth methods = guest sam\n");
         // 👇 允许 NTLMv1 认证：某些客户端(curl/旧版)只用 NTLMv1，smbd 默认禁止会 Login denied
         conf.append("   ntlm auth = yes\n");
+        // 签名：auto(默认) 即可——mandatory 会让 macOS 在协商后直接断开；
+        // auto 下客户端要求签名时服务端会签（python SMB3 客户端实测兼容）
         conf.append("   \n");
 // 👇 修改 3: 增加一个参数，强制使用 Unix 换行符，避免某些解析问题
         conf.append("   unix extensions = no\n");
@@ -206,7 +225,7 @@ public class SambaSetup {
         conf.append("   cache directory = ").append(lockDir).append("\n");
         conf.append("   # 👇 修改 4: 指定日志文件，方便我们调试\n");
         conf.append("   log file = ").append(lockDir).append("/smbd.log\n");
-        conf.append("   log level = 2\n"); // 增加日志详细程度
+        conf.append("   log level = 4\n"); // 增加日志详细程度（排障用，可调低）
 
         // 3. 定义共享目录
         conf.append("[Public]\n");
@@ -228,15 +247,31 @@ public class SambaSetup {
     }
 
     private static void generateSmbPasswd(File sambaRoot) throws Exception {
-        String ntHash = computeNtHash("debug123");
+        // 空密码的 NT hash：MD4("") = 31D6CFE0D16AE931B73C59D7E0C089C0
+        // 免密方案：debug 账号无密码，配合 username map 把客户端用户名都映射到 debug
+        String ntHash = "31D6CFE0D16AE931B73C59D7E0C089C0";
         // X = 密码永不过期；LCT 必须是非 0 的时间戳，否则 smbd 判定"密码必须修改"拒绝登录
         String lct = String.format("%08X", System.currentTimeMillis() / 1000);
+        // uid 用应用真实 uid，保证与 shim 的 getpwuid 解析一致
+        int uid = android.os.Process.myUid();
         String line = String.format(
-                "debug:2000:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[UX         ]:LCT-%s:\n",
-                ntHash, lct
+                "debug:%d:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[UX         ]:LCT-%s:\n",
+                uid, ntHash, lct
         );
         writeFile(new File(sambaRoot, "etc/smbpasswd"), line);
-        Log.i(TAG, "smbpasswd generated.");
+        Log.i(TAG, "smbpasswd generated (empty password).");
+    }
+
+    /**
+     * username map：把客户端可能发送的各种用户名（macOS 登录名、GUEST、常见名）
+     * 都映射到 debug。这样 macOS 无论发什么用户名 + 空密码，都能认证成 debug，
+     * 走的是真实用户会话（签名正常），绕开 macOS 不接受 guest 会话的问题。
+     */
+    private static void generateUsernameMap(File sambaRoot) throws Exception {
+        // 格式：unix用户名 = 客户端用户名列表（以空格分隔，大小写不敏感）
+        String map = "debug = debug guest guestaccount zhaiyongdev administrator root user\n";
+        writeFile(new File(sambaRoot, "etc/username.map"), map);
+        Log.i(TAG, "username.map generated.");
     }
 
     // ==================== NT Hash 计算 ====================
