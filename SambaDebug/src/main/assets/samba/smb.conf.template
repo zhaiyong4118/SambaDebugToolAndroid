@@ -1,0 +1,23 @@
+[global]
+    workgroup = WORKGROUP
+    netbios name = Android
+    server string = Android Debug SMB Server
+    smb ports = 1445
+    server min protocol = SMB2
+    security = user
+    passdb backend = smbpasswd:${samba_etc}/smbpasswd
+    map to guest = bad user
+
+[Private]
+    comment = App Private Directory
+    path = ${app_private_dir}
+    browseable = yes
+    writable = yes
+    guest ok = no
+
+[External]
+    comment = External Storage
+    path = /storage/emulated/0
+    browseable = yes
+    writable = no
+    guest ok = no
