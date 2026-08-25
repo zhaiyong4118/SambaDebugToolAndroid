@@ -16,7 +16,6 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 
 import java.io.File;
-import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.Collections;
@@ -30,7 +29,7 @@ public class SambaForegroundService extends Service {
     private static final int SMB_PORT = 1445;
 
     private Process smbdProcess;
-    private Process nmbdProcess;
+//    private Process nmbdProcess;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.MulticastLock multicastLock;
 
@@ -58,7 +57,7 @@ public class SambaForegroundService extends Service {
                 smbdProcess = SambaSetup.startDaemon(sambaRoot, "smbd");
 
                 // 启动 nmbd（可选，用于 NetBIOS 名称发现）
-                nmbdProcess = SambaSetup.startDaemon(sambaRoot, "nmbd");
+//                nmbdProcess = SambaSetup.startDaemon(sambaRoot, "nmbd");
 
                 // 持有 WakeLock 防止 CPU 休眠
                 acquireWakeLock();
@@ -85,7 +84,7 @@ public class SambaForegroundService extends Service {
         super.onDestroy();
         // 停止 smbd 和 nmbd
         if (smbdProcess != null) smbdProcess.destroy();
-        if (nmbdProcess != null) nmbdProcess.destroy();
+//        if (nmbdProcess != null) nmbdProcess.destroy();
         // 释放锁
         releaseWakeLock();
         releaseMulticastLock();

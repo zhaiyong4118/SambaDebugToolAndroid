@@ -7,6 +7,7 @@ import android.util.Log;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -36,7 +37,7 @@ public class SambaSetup {
         new File(sambaRoot, "var").mkdirs();
 
         // 4. 生成 smb.conf
-        generateSmbConf(context, sambaRoot);
+        generateSmbConf(context, sambaRoot, new File(context.getDataDir().getAbsolutePath()));
 
         // 5. 生成 smbpasswd
         generateSmbPasswd(sambaRoot);
@@ -50,39 +51,47 @@ public class SambaSetup {
         String libPath = new File(sambaRoot, "lib").getAbsolutePath()
                 + ":" + new File(sambaRoot, "lib/private").getAbsolutePath();
 
-        // 👇 核心修改：使用 app_process 来执行二进制文件
-        // 命令解释：
-        // app_process: Android 的进程启动器，位于 /system/bin，有执行权限。
-        // /system/bin: app_process 的第一个参数，指定进程启动的根目录，随意指定一个系统目录即可。
-        // com.example.samba: 一个假的类名，app_process 需要一个类名参数，但我们实际不加载任何 Java 类。
-        // -D -S ...: 这些是传递给 smbd 的实际参数。
-        String[] cmd = new String[] {
+        // 日志文件路径
+        String logFile = new File(sambaRoot, "var/" + daemonName + ".log").getAbsolutePath();
+        new File(sambaRoot, "var").mkdirs();
+
+        String[] cmd = new String[]{
                 "/system/bin/app_process",
                 "/system/bin",
-                "com.example.samba", // 这个类名是假的，只是为了满足 app_process 的参数格式
+                "com.example.samba",
                 binFile.getAbsolutePath(),
                 "-D",
                 "-S",
+                "-l", logFile,
                 "--configfile=" + confFile.getAbsolutePath()
         };
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        // 设置库路径环境变量
         pb.environment().put("LD_LIBRARY_PATH", libPath);
         pb.environment().put("TMPDIR", System.getProperty("java.io.tmpdir"));
-
         pb.redirectErrorStream(true);
 
         Process process = pb.start();
-        Log.i(TAG, daemonName + " started via app_process");
+        Log.i(TAG, daemonName + " started, log: " + logFile);
 
-        // 等待一小段时间检查是否立即退出
+        // 异步读取 stdout/stderr，打印到 Logcat
+        new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    Log.i(TAG, daemonName + ": " + line);
+                }
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to read " + daemonName + " output", e);
+            }
+        }, daemonName + "-log-reader").start();
+
+        // 等待检查是否立即退出
         Thread.sleep(500);
         try {
             int exitCode = process.exitValue();
-            String output = readStream(process.getInputStream());
-            throw new RuntimeException(daemonName + " exited immediately with code "
-                    + exitCode + "\nOutput: " + output);
+            throw new RuntimeException(daemonName + " exited immediately with code " + exitCode);
         } catch (IllegalThreadStateException e) {
             Log.i(TAG, daemonName + " is running.");
         }
@@ -130,17 +139,70 @@ public class SambaSetup {
 
     // ==================== 配置生成 ====================
 
-    private static void generateSmbConf(Context context, File sambaRoot) throws Exception {
-        String template = readAssetString(context, "samba/smb.conf.template");
-        String appPrivateDir = context.getFilesDir().getAbsolutePath();
+    private static void generateSmbConf(Context context, File sambaRoot, File shareDir) throws Exception {
+        // 1. 准备路径
+        // 注意：这里使用 shareDir 作为共享目录，确保路径正确
+        String sharePath = shareDir.getAbsolutePath();
         String sambaEtc = new File(sambaRoot, "etc").getAbsolutePath();
+        String sambaLib = new File(sambaRoot, "lib").getAbsolutePath();
+        // 指定一个可写的目录作为锁文件和pid文件的存放地，避免权限问题
+        String lockDir = context.getCacheDir().getAbsolutePath();
 
-        String config = template
-                .replace("${app_private_dir}", appPrivateDir)
-                .replace("${samba_etc}", sambaEtc);
+        // 2. 构建配置字符串
+        // 我们直接硬编码配置，不再依赖模板文件
+        StringBuilder conf = new StringBuilder();
 
-        writeFile(new File(sambaRoot, "etc/smb.conf"), config);
-        Log.i(TAG, "smb.conf generated.");
+        conf.append("[global]\n");
+        conf.append("   workgroup = WORKGROUP\n");
+        conf.append("   netbios name = AndroidSamba\n");
+        conf.append("   server string = Android Samba Server\n");
+        conf.append("   \n");
+        conf.append("   # 端口与协议\n");
+        conf.append("   smb ports = 1445\n");
+// 👇 修改 1: 降低最低协议版本，以兼容旧版客户端
+        conf.append("   server min protocol = NT1\n");
+// 👇 修改 2: 禁用 SMB1，但允许 NT1 (SMB 2.0)，这是一个更广泛的兼容设置
+        conf.append("   server max protocol = SMB3\n");
+        conf.append("   \n");
+        conf.append("   # 网络接口\n");
+        conf.append("   interfaces = 0.0.0.0\n");
+        conf.append("   bind interfaces only = yes\n");
+        conf.append("   \n");
+        conf.append("   # 安全与用户配置\n");
+        conf.append("   security = user\n");
+        conf.append("   passdb backend = smbpasswd:").append(sambaEtc).append("/smbpasswd\n");
+        conf.append("   map to guest = Bad User\n");
+        conf.append("   guest account = nobody\n");
+        conf.append("   \n");
+// 👇 修改 3: 增加一个参数，强制使用 Unix 换行符，避免某些解析问题
+        conf.append("   unix extensions = no\n");
+        conf.append("   \n");
+        conf.append("   # 性能与日志\n");
+        conf.append("   socket options = TCP_NODELAY\n");
+        conf.append("   dns proxy = no\n");
+        conf.append("   pid directory = ").append(lockDir).append("\n");
+        conf.append("   lock directory = ").append(lockDir).append("\n");
+        conf.append("   state directory = ").append(lockDir).append("\n");
+        conf.append("   # 👇 修改 4: 指定日志文件，方便我们调试\n");
+        conf.append("   log file = ").append(lockDir).append("/smbd.log\n");
+        conf.append("   log level = 2\n"); // 增加日志详细程度
+
+        // 3. 定义共享目录
+        conf.append("[Public]\n");
+        conf.append("   comment = Public Share\n");
+        conf.append("   path = ").append(sharePath).append("\n");
+        conf.append("   browseable = yes\n");
+        conf.append("   writable = yes\n");
+        // 关键：允许访客访问此共享
+        conf.append("   guest ok = yes\n");
+        // 关键：赋予最大权限，避免 Android 写入失败
+        conf.append("   create mask = 0777\n");
+        conf.append("   directory mask = 0777\n");
+        conf.append("   force user = nobody\n");
+
+        // 写入文件
+        writeFile(new File(sambaRoot, "etc/smb.conf"), conf.toString());
+        Log.i(TAG, "smb.conf generated at: " + sambaRoot);
     }
 
     private static void generateSmbPasswd(File sambaRoot) throws Exception {
