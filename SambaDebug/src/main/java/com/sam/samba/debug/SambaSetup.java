@@ -241,15 +241,13 @@ public class SambaSetup {
         Log.i(TAG, "smb.conf generated at: " + sambaRoot);
     }
 
-    /** 返回已配置的共享清单（用于启动后打印使用说明），与 generateSmbConf 保持一致。 */
+    /** 返回已配置的共享清单（完整路径，供启动后打印使用说明），与 generateSmbConf 保持一致。 */
     public static String getShareSummary(Context context) {
         StringBuilder sb = new StringBuilder();
-        sb.append("   /data     → App 私有目录\n");
-        sb.append("               ").append(context.getDataDir().getAbsolutePath()).append("\n");
+        sb.append("   /data     = ").append(context.getDataDir().getAbsolutePath()).append("\n");
         File ext = context.getExternalFilesDir(null);
         if (ext != null && ext.getParentFile() != null) {
-            sb.append("   /appdata  → Android/data 外部存储\n");
-            sb.append("               ").append(ext.getParentFile().getAbsolutePath()).append("\n");
+            sb.append("   /appdata  = ").append(ext.getParentFile().getAbsolutePath()).append("\n");
         }
         return sb.toString();
     }
