@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Android 13+ 需要运行时申请才能显示前台服务通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- WakeLock 防止休眠断连 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 

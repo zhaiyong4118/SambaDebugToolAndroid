@@ -132,7 +132,7 @@ public class SambaForegroundService extends Service {
         }
 
         Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentTitle("SMB Debug Server")
                 .setStyle(new NotificationCompat.BigTextStyle().bigText(connectInfo))
                 .setContentText("Running on port " + SMB_PORT)

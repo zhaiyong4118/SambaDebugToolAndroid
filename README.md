@@ -86,6 +86,16 @@ adb logcat -s SambaDebug
 
 3. 无需任何初始化代码 —— Debug 构建下 `SambaInitProvider`（ContentProvider）会自动启动服务。
 
+> ⚠️ **Android 13+ 必须申请通知权限**：前台服务的通知需要 `POST_NOTIFICATIONS` 运行时权限（库的 manifest 已声明该权限，但需要宿主 App 在运行时向用户申请），否则通知栏不显示、系统设置里通知开关也无法打开。参考 demo App 的 `MainActivity`：
+>
+> ```kotlin
+> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+>     ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+>     != PackageManager.PERMISSION_GRANTED) {
+>     requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+> }
+> ```
+
 > ⚠️ 服务只在 **debug 构建**（`android:debuggable=true`）下自动启动，release 包不会启动，避免误打包进线上版本。
 
 ### 集成后要检查的点
