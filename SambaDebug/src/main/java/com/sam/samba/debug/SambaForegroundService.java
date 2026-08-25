@@ -158,18 +158,30 @@ public class SambaForegroundService extends Service {
 
     private String getLocalIpAddress() {
         try {
+            // 只向客户端展示局域网 IPv4 地址。优先 WiFi(wlan) 接口，
+            // 否则容易取到 rmnet_data0(蜂窝) 的 fe80:: link-local IPv6，客户端根本连不上。
+            String ipv4Fallback = null;
             List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
             for (NetworkInterface intf : interfaces) {
                 if (intf.isLoopback() || !intf.isUp()) continue;
+                String name = intf.getName();
+                if (name == null) continue;
+                // 跳过蜂窝数据/虚拟/回环接口
+                if (name.contains("rmnet") || name.contains("tun")
+                        || name.contains("ppp") || name.contains("dummy")) continue;
+
                 List<InetAddress> addrs = Collections.list(intf.getInetAddresses());
                 for (InetAddress addr : addrs) {
+                    if (addr.isLoopbackAddress() || addr.isLinkLocalAddress()) continue;
                     String ip = addr.getHostAddress();
-                    // 过滤掉虚拟网卡（如 10.x 通常是 VPN）
-                    if (!ip.startsWith("10.") && !ip.startsWith("169.254.")) {
-                        return ip;
+                    if (ip == null || ip.contains(":")) continue; // 只要 IPv4
+                    if (name.startsWith("wlan")) {
+                        return ip; // WiFi IPv4 首选
                     }
+                    if (ipv4Fallback == null) ipv4Fallback = ip;
                 }
             }
+            if (ipv4Fallback != null) return ipv4Fallback;
         } catch (Exception e) {
             Log.e(TAG, "Failed to get IP address", e);
         }

@@ -27,9 +27,10 @@ public class SambaSetup {
         copyAssetDir(context.getAssets(), SAMBA_DIR, sambaRoot);
         Log.i(TAG, "Files copied to " + sambaRoot.getAbsolutePath());
 
-        // 2. 设置执行权限
+        // 2. 设置执行权限（shim 是 LD_PRELOAD 的无 root 垫片，也需要可执行）
         setExecutableRecursive(new File(sambaRoot, "bin"));
         setExecutableRecursive(new File(sambaRoot, "lib"));
+        setExecutableRecursive(new File(sambaRoot, "shim"));
 
         // 3. 创建运行目录
         new File(sambaRoot, "etc").mkdirs();
@@ -55,20 +56,32 @@ public class SambaSetup {
         String logFile = new File(sambaRoot, "var/" + daemonName + ".log").getAbsolutePath();
         new File(sambaRoot, "var").mkdirs();
 
+        // 不能直接 execve app data 目录里的二进制：Android SELinux 会拒绝
+        // untrusted_app 对 app_data_file 的 execute_no_trans（实测 smbd 就是这么被拦下的）。
+        // 正确姿势（Termux 同款）：exec 动态链接器，把二进制路径作为参数传给它。
+        // 链接器用 mmap 加载（只需 execute 权限，不触发 execute_no_trans），
+        // 再由 LD_LIBRARY_PATH 解析打包进来的 .so。
+        // 注意：smbd 是 32 位 ARM（EABI5），必须用 32 位链接器 /system/bin/linker；
+        // 若换成 arm64 二进制，这里要改成 /system/bin/linker64。
+        // -F: 前台运行，不让 smbd 自行 fork，这样 process 句柄就是 smbd 本身，便于停止/存活检测。
         String[] cmd = new String[]{
-                "/system/bin/app_process",
-                "/system/bin",
-                "com.example.samba",
+                "/system/bin/linker",
                 binFile.getAbsolutePath(),
-                "-D",
-                "-S",
+                "-F",
                 "-l", logFile,
                 "--configfile=" + confFile.getAbsolutePath()
         };
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.environment().put("LD_LIBRARY_PATH", libPath);
-        pb.environment().put("TMPDIR", System.getProperty("java.io.tmpdir"));
+        pb.environment().put("TMPDIR", sambaRoot.getAbsolutePath()); // Android 上没有可写的 /tmp
+
+        // 无 root 垫片：拦截 setuid 系 syscall（seccomp 会 SIGSYS 杀 smbd）
+        // 并伪造 getpwnam/getpwuid（Android /etc/passwd 为空）
+        File shimFile = new File(sambaRoot, "shim/libsmbd_shim.so");
+        if (shimFile.exists()) {
+            pb.environment().put("LD_PRELOAD", shimFile.getAbsolutePath());
+        }
         pb.redirectErrorStream(true);
 
         Process process = pb.start();
@@ -164,15 +177,18 @@ public class SambaSetup {
 // 👇 修改 2: 禁用 SMB1，但允许 NT1 (SMB 2.0)，这是一个更广泛的兼容设置
         conf.append("   server max protocol = SMB3\n");
         conf.append("   \n");
-        conf.append("   # 网络接口\n");
-        conf.append("   interfaces = 0.0.0.0\n");
-        conf.append("   bind interfaces only = yes\n");
+        conf.append("   # 网络接口：Android 上 getifaddrs 自动探测会失败，必须显式指定\n");
+        conf.append("   # 0.0.0.0/0 表示所有 IPv4；配合 bind interfaces only = no（默认）监听所有接口\n");
+        conf.append("   interfaces = 0.0.0.0/0\n");
+        conf.append("   bind interfaces only = no\n");
         conf.append("   \n");
         conf.append("   # 安全与用户配置\n");
         conf.append("   security = user\n");
         conf.append("   passdb backend = smbpasswd:").append(sambaEtc).append("/smbpasswd\n");
         conf.append("   map to guest = Bad User\n");
         conf.append("   guest account = nobody\n");
+        // 👇 允许 NTLMv1 认证：某些客户端(curl/旧版)只用 NTLMv1，smbd 默认禁止会 Login denied
+        conf.append("   ntlm auth = yes\n");
         conf.append("   \n");
 // 👇 修改 3: 增加一个参数，强制使用 Unix 换行符，避免某些解析问题
         conf.append("   unix extensions = no\n");
@@ -183,6 +199,11 @@ public class SambaSetup {
         conf.append("   pid directory = ").append(lockDir).append("\n");
         conf.append("   lock directory = ").append(lockDir).append("\n");
         conf.append("   state directory = ").append(lockDir).append("\n");
+        // 👇 把二进制编译期默认路径(/data/samba/private 等)全部指到 app 缓存，否则 smbd 无权限创建
+        conf.append("   private dir = ").append(lockDir).append("\n");
+        // 这个构建不认识 core directory，去掉以免报未知参数（corepath 失败是告警，不影响运行）
+        conf.append("   ncalrpc dir = ").append(lockDir).append("\n");
+        conf.append("   cache directory = ").append(lockDir).append("\n");
         conf.append("   # 👇 修改 4: 指定日志文件，方便我们调试\n");
         conf.append("   log file = ").append(lockDir).append("/smbd.log\n");
         conf.append("   log level = 2\n"); // 增加日志详细程度
@@ -198,7 +219,8 @@ public class SambaSetup {
         // 关键：赋予最大权限，避免 Android 写入失败
         conf.append("   create mask = 0777\n");
         conf.append("   directory mask = 0777\n");
-        conf.append("   force user = nobody\n");
+        // 不能用 force user = nobody：共享目录是 app 私有目录(0700)，
+        // 只有 app uid(debug) 能访问，nobody 会被拒 → Access denied
 
         // 写入文件
         writeFile(new File(sambaRoot, "etc/smb.conf"), conf.toString());
@@ -207,9 +229,11 @@ public class SambaSetup {
 
     private static void generateSmbPasswd(File sambaRoot) throws Exception {
         String ntHash = computeNtHash("debug123");
+        // X = 密码永不过期；LCT 必须是非 0 的时间戳，否则 smbd 判定"密码必须修改"拒绝登录
+        String lct = String.format("%08X", System.currentTimeMillis() / 1000);
         String line = String.format(
-                "debug:2000:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[U          ]:LCT-00000000:\n",
-                ntHash
+                "debug:2000:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:%s:[UX         ]:LCT-%s:\n",
+                ntHash, lct
         );
         writeFile(new File(sambaRoot, "etc/smbpasswd"), line);
         Log.i(TAG, "smbpasswd generated.");
