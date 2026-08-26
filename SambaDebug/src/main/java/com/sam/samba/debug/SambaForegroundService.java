@@ -163,12 +163,12 @@ public class SambaForegroundService extends Service {
         sb.append("Samba 服务已启动\n");
         sb.append("\n");
         sb.append("-----------------------------------------------------------\n");
-        sb.append("smb://").append(addr).append(":").append(SMB_PORT).append("/data\n");
-        sb.append("smb://").append(addr).append(":").append(SMB_PORT).append("/appdata\n");
+        sb.append("open 'smb://guest@").append(addr).append(":").append(SMB_PORT).append("/data'\n");
+        sb.append("open 'smb://guest@").append(addr).append(":").append(SMB_PORT).append("/appdata'\n");
         sb.append("-----------------------------------------------------------\n");
         sb.append("adb forward tcp:").append(SMB_PORT).append(" tcp:").append(SMB_PORT).append("\n");
-        sb.append("smb://127.0.0.1:").append(SMB_PORT).append("/data\n");
-        sb.append("smb://127.0.0.1:").append(SMB_PORT).append("/appdata\n");
+        sb.append("open 'smb://guest@127.0.0.1:").append(SMB_PORT).append("/data'\n");
+        sb.append("open 'smb://guest@127.0.0.1:").append(SMB_PORT).append("/appdata'\n");
         sb.append("\n");
         sb.append("-----------------------------------------------------------\n");
         sb.append("-------------------------使用说明----------------------------\n");

@@ -31,7 +31,7 @@ android {
 }
 
 group = 'io.github.zhaiyong4118'
-version = '1.0.2'
+version = '1.0.3'
 
 // This module is pure Java, but AGP 9 injects a kotlin-stdlib (2.2.x) dependency
 // into the published Gradle module metadata, forcing consumers to match a Kotlin
@@ -49,7 +49,7 @@ publishing {
         release(MavenPublication) {
             groupId = 'io.github.zhaiyong4118'
             artifactId = 'samba-debug'
-            version = '1.0.2'
+            version = "${version}"
 
             afterEvaluate {
                 from components.release
