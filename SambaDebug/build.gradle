@@ -7,7 +7,7 @@ plugins {
 android {
     namespace 'com.sam.samba.debug'
     compileSdk {
-        version = release(37)
+        version = release(36)
     }
 
     defaultConfig {
@@ -31,14 +31,14 @@ android {
 }
 
 group = 'io.github.zhaiyong4118'
-version = '1.0.0'
+version = '1.0.1'
 
 publishing {
     publications {
         release(MavenPublication) {
             groupId = 'io.github.zhaiyong4118'
             artifactId = 'samba-debug'
-            version = '1.0.0'
+            version = '1.0.1'
 
             afterEvaluate {
                 from components.release
