@@ -31,14 +31,25 @@ android {
 }
 
 group = 'io.github.zhaiyong4118'
-version = '1.0.1'
+version = '1.0.2'
+
+// This module is pure Java, but AGP 9 injects a kotlin-stdlib (2.2.x) dependency
+// into the published Gradle module metadata, forcing consumers to match a Kotlin
+// version they may not use. The Java code never references Kotlin classes, so the
+// dependency is unnecessary. Disable Gradle module metadata generation so consumers
+// resolve via the POM only (which has kotlin-stdlib stripped by pom.withXml below).
+tasks.configureEach {
+    if (name == 'generateMetadataFileForReleasePublication') {
+        enabled = false
+    }
+}
 
 publishing {
     publications {
         release(MavenPublication) {
             groupId = 'io.github.zhaiyong4118'
             artifactId = 'samba-debug'
-            version = '1.0.1'
+            version = '1.0.2'
 
             afterEvaluate {
                 from components.release
@@ -68,6 +79,23 @@ publishing {
                     url = 'https://github.com/zhaiyong4118/SambaDebugToolAndroid'
                 }
             }
+
+            // This module is pure Java. AGP 9 injects kotlin-stdlib (2.2.x) automatically,
+            // but it must not be published - it forces consumers to match a Kotlin version
+            // they may not use. Strip all kotlin-stdlib variants from the POM.
+            pom.withXml {
+                def root = asNode()
+                def deps = root.dependencies
+                def depsNode = (deps != null && deps.size() > 0) ? deps[0] : null
+                if (depsNode != null) {
+                    def stale = []
+                    depsNode.dependency.findAll { d ->
+                        d.groupId.text() == 'org.jetbrains.kotlin' &&
+                                d.artifactId.text().startsWith('kotlin-stdlib')
+                    }.each { stale.add(it) }
+                    stale.each { depsNode.remove(it) }
+                }
+            }
         }
     }
 
@@ -89,8 +117,10 @@ signing {
 }
 
 dependencies {
-    implementation libs.androidx.appcompat
-    implementation libs.material
+    // Only androidx.core is needed (NotificationCompat in SambaForegroundService).
+    // appcompat/material are NOT needed and pulled in a Kotlin 2.2 kotlin-stdlib,
+    // which breaks consumers compiled against older Kotlin versions.
+    implementation 'androidx.core:core:1.16.0'
     testImplementation libs.junit
     androidTestImplementation libs.androidx.espresso.core
     androidTestImplementation libs.androidx.junit
